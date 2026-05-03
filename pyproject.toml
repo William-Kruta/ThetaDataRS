@@ -1,7 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "thetadatars"
 version = "0.1.0"
-description = "Add your description here"
+description = "Python wrapper and DuckDB cache for ThetaData option and streaming endpoints."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["python-dotenv", "thetadata", "duckdb", "pyarrow", "websockets"]
+keywords = ["thetadata", "options", "market-data", "duckdb", "polars"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "duckdb",
+    "pyarrow",
+    "python-dotenv",
+    "thetadata",
+    "websockets",
+]
+
+[tool.setuptools.packages.find]
+include = ["thetadatars*"]

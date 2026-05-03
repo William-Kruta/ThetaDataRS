@@ -41,6 +41,19 @@ _OPTION_MODULES = [
     "thetadatars.options.snapshot.open_interest",
     "thetadatars.options.snapshot.quote",
     "thetadatars.options.snapshot.trade",
+    "thetadatars.options.screeners.credit_spreads",
+    "thetadatars.options.screeners.cash_secured_put",
+    "thetadatars.options.screeners.call",
+    "thetadatars.options.screeners.put",
+    "thetadatars.options.screeners.covered_call",
+    "thetadatars.options.screeners.debit_spreads",
+    "thetadatars.options.screeners.iron_condor",
+    "thetadatars.options.screeners.iron_butterfly",
+    "thetadatars.options.screeners.straddle",
+    "thetadatars.options.screeners.strangle",
+    "thetadatars.options.screeners.calendar_spread",
+    "thetadatars.options.screeners.diagonal_spread",
+    "thetadatars.options.screeners.protective_put",
 ]
 
 _STREAMING_MODULES = [

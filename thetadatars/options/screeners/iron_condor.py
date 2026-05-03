@@ -1,0 +1,148 @@
+import datetime as dt
+import logging
+from typing import Literal
+
+import polars as pl
+
+from ...client import Client, create_client
+from ..snapshot.greeks_first_order import RateType
+from ._common import filter_expiration_dte, finite_number, get_first_order_chain, parse_expiration, probability_otm_from_delta, right_name
+from ._strategy_utils import annualize, dte, empty_frame, grouped_by_expiration, normalize_rows, sort_and_limit
+
+log = logging.getLogger(__name__)
+
+RankBy = Literal["annualized_risk_adjusted_return", "annualized_return_on_risk", "return_on_risk", "credit", "probability_range"]
+
+_OUTPUT_COLUMNS = [
+    "root", "expiration", "strategy", "long_put_strike", "short_put_strike",
+    "short_call_strike", "long_call_strike", "put_width", "call_width", "credit",
+    "max_loss", "return_on_risk", "annualized_return_on_risk", "probability_range",
+    "risk_adjusted_return", "annualized_risk_adjusted_return", "lower_breakeven",
+    "upper_breakeven", "dte", "underlying_price", "short_put_delta", "short_call_delta",
+]
+
+
+def _build_rows(ticker: str, chain: pl.DataFrame, *, today: dt.date, min_credit: float, min_width: float | None, max_width: float | None) -> pl.DataFrame:
+    output = []
+    for expiration, expiration_rows in grouped_by_expiration(normalize_rows(chain)).items():
+        puts = sorted([r for r in expiration_rows if right_name(r.get("right")) == "put"], key=lambda r: finite_number(r.get("strike")) or 0)
+        calls = sorted([r for r in expiration_rows if right_name(r.get("right")) == "call"], key=lambda r: finite_number(r.get("strike")) or 0)
+        days = dte(expiration, today)
+        for long_put in puts:
+            lp = finite_number(long_put.get("strike"))
+            lp_ask = finite_number(long_put.get("ask"))
+            if lp is None or lp_ask is None:
+                continue
+            for short_put in puts:
+                sp = finite_number(short_put.get("strike"))
+                sp_bid = finite_number(short_put.get("bid"))
+                if sp is None or sp_bid is None or lp >= sp:
+                    continue
+                put_width = sp - lp
+                if min_width is not None and put_width < min_width:
+                    continue
+                if max_width is not None and put_width > max_width:
+                    continue
+                for short_call in calls:
+                    sc = finite_number(short_call.get("strike"))
+                    sc_bid = finite_number(short_call.get("bid"))
+                    if sc is None or sc_bid is None or sc <= sp:
+                        continue
+                    for long_call in calls:
+                        lc = finite_number(long_call.get("strike"))
+                        lc_ask = finite_number(long_call.get("ask"))
+                        if lc is None or lc_ask is None or lc <= sc:
+                            continue
+                        call_width = lc - sc
+                        if min_width is not None and call_width < min_width:
+                            continue
+                        if max_width is not None and call_width > max_width:
+                            continue
+                        credit = sp_bid - lp_ask + sc_bid - lc_ask
+                        max_loss = max(put_width, call_width) - credit
+                        if credit < min_credit or max_loss <= 0:
+                            continue
+                        return_on_risk = credit / max_loss
+                        put_prob = probability_otm_from_delta(finite_number(short_put.get("delta")))
+                        call_prob = probability_otm_from_delta(finite_number(short_call.get("delta")))
+                        probability_range = None
+                        if put_prob is not None and call_prob is not None:
+                            probability_range = max(0.0, min(1.0, put_prob + call_prob - 1))
+                        risk_adjusted_return = return_on_risk * probability_range if probability_range is not None else None
+                        output.append({
+                            "root": short_put.get("root", ticker),
+                            "expiration": expiration,
+                            "strategy": "iron_condor",
+                            "long_put_strike": lp,
+                            "short_put_strike": sp,
+                            "short_call_strike": sc,
+                            "long_call_strike": lc,
+                            "put_width": put_width,
+                            "call_width": call_width,
+                            "credit": credit,
+                            "max_loss": max_loss,
+                            "return_on_risk": return_on_risk,
+                            "annualized_return_on_risk": annualize(return_on_risk, days),
+                            "probability_range": probability_range,
+                            "risk_adjusted_return": risk_adjusted_return,
+                            "annualized_risk_adjusted_return": annualize(risk_adjusted_return, days),
+                            "lower_breakeven": sp - credit,
+                            "upper_breakeven": sc + credit,
+                            "dte": days,
+                            "underlying_price": finite_number(short_put.get("underlying_price")),
+                            "short_put_delta": finite_number(short_put.get("delta")),
+                            "short_call_delta": finite_number(short_call.get("delta")),
+                        })
+    return pl.DataFrame(output).select(_OUTPUT_COLUMNS) if output else empty_frame(_OUTPUT_COLUMNS)
+
+
+def get_best_iron_condors(
+    ticker: str,
+    expiration: dt.date | str,
+    client: Client | None = None,
+    *,
+    min_dte: int | None = None,
+    max_dte: int | None = None,
+    min_credit: float = 0.01,
+    min_width: float | None = None,
+    max_width: float | None = None,
+    top_n: int | None = 25,
+    rank_by: RankBy = "annualized_risk_adjusted_return",
+    annual_dividend: float | None = None,
+    rate_type: RateType = "sofr",
+    rate_value: float | None = None,
+    stock_price: float | None = None,
+    version: Literal["latest", "1"] = "latest",
+    strike_range: int | None = None,
+    min_time: dt.time | None = None,
+    use_market_value: bool = False,
+    fallback_to_local_greeks: bool = True,
+    local_greeks_steps: int = 150,
+    stale_threshold: dt.timedelta = dt.timedelta(hours=1),
+    conn=None,
+) -> pl.DataFrame:
+    expiration = parse_expiration(expiration)
+    today = dt.date.today()
+    if expiration != "*":
+        days = dte(expiration, today)
+        if min_dte is not None and days < min_dte:
+            return empty_frame(_OUTPUT_COLUMNS)
+        if max_dte is not None and days > max_dte:
+            return empty_frame(_OUTPUT_COLUMNS)
+    if client is None:
+        client = create_client()
+    chain = get_first_order_chain(
+        ticker=ticker, expiration=expiration, client=client, log=log, right="both", today=today,
+        annual_dividend=annual_dividend, rate_type=rate_type, rate_value=rate_value,
+        stock_price=stock_price, version=version, max_dte=max_dte, strike_range=strike_range,
+        min_time=min_time, use_market_value=use_market_value, fallback_to_local_greeks=fallback_to_local_greeks,
+        local_greeks_steps=local_greeks_steps, stale_threshold=stale_threshold, conn=conn,
+    )
+    chain = filter_expiration_dte(chain, expiration=expiration, today=today, min_dte=min_dte, max_dte=max_dte)
+    condors = _build_rows(ticker, chain, today=today, min_credit=min_credit, min_width=min_width, max_width=max_width)
+    return sort_and_limit(condors, rank_by=rank_by, tie_breakers=["credit", "probability_range"], descending=[True, True, True], top_n=top_n)
+
+
+find_best_iron_condors = get_best_iron_condors
+
+__all__ = ["get_best_iron_condors", "find_best_iron_condors"]
