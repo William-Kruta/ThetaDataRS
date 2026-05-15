@@ -243,8 +243,11 @@ def filter_expiration_dte(
     if expiration != "*" or chain.is_empty() or (min_dte is None and max_dte is None):
         return chain
 
+    exp_col = pl.col("expiration")
+    if chain.schema.get("expiration") == pl.String or chain.schema.get("expiration") == pl.Utf8:
+        exp_col = exp_col.str.to_date("%Y-%m-%d")
     chain = chain.with_columns(
-        (pl.col("expiration") - pl.lit(today)).dt.total_days().alias("_dte")
+        (exp_col - pl.lit(today)).dt.total_days().alias("_dte")
     )
     if min_dte is not None:
         chain = chain.filter(pl.col("_dte") >= min_dte)
