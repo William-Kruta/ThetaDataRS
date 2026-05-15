@@ -1,6 +1,8 @@
 # Option Strategy Screeners
 
-This project currently includes screeners for long calls, long puts, cash-secured puts, and credit spreads. The screeners try ThetaData first-order Greeks first. If the account only has VALUE-tier access and the Greeks endpoint is unavailable, the screeners fall back to snapshot quotes plus locally calculated American-option Greeks.
+This project includes typed screeners for long calls, long puts, covered calls, protective puts, cash-secured puts, credit spreads, debit spreads, calendar spreads, diagonal spreads, straddles, strangles, iron condors, and iron butterflies. The screeners try ThetaData first-order Greeks first. If the account only has VALUE-tier access and the Greeks endpoint is unavailable, the screeners fall back to snapshot quotes plus locally calculated American-option Greeks.
+
+Every strategy keeps its legacy `get_best_*` / `find_best_*` DataFrame helper and also exposes a typed request/result API with `plan_*`, `screen_*`, `warm_*_cache`, and watchlist helpers. Generic dispatch is available through `thetadatars.options.screeners.strategies`.
 
 These screeners are ranking tools, not trade recommendations. They use quotes and model-derived metrics, so review liquidity, assignment risk, earnings, dividends, and position sizing before trading.
 
@@ -195,6 +197,18 @@ Use cash-secured puts when you are willing to own shares at a lower effective pr
 
 Use credit spreads when you want short-premium income with defined risk and less collateral than a cash-secured or naked short option.
 
+Use debit spreads when you want defined-risk directional exposure with less premium outlay than buying a single long option.
+
+Use covered calls when you own shares and want to collect call premium while accepting capped upside.
+
+Use protective puts when you own shares and want defined downside protection.
+
+Use straddles or strangles when you want long-volatility exposure around a move and are willing to pay two option premiums.
+
+Use calendar or diagonal spreads when you want term-structure exposure across expirations.
+
+Use iron condors or iron butterflies when you want defined-risk range-bound short-premium exposure with candidate caps to control combinatorial search cost.
+
 ## Notes On Ranking
 
 The default ranking differs by strategy because the trade objectives differ:
@@ -205,5 +219,7 @@ get_best_puts(side="long")     -> delta_per_dollar
 get_best_cash_secured_puts     -> annualized_risk_adjusted_return
 get_best_credit_spreads        -> annualized_return_on_risk
 ```
+
+Other strategy modules document their supported `rank_by` values on their typed request objects and legacy helper signatures.
 
 Delta-based probability fields are approximations, not true probabilities. They are useful for sorting and filtering, but they should not be treated as precise forecasts.

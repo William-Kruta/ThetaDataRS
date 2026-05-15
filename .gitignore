@@ -11,8 +11,15 @@ wheels/
 .env
 
 # LLM
+.agents
+.pytest_cache
 .claude
 .codex 
 AGENTS.md
 OUTLINE.md 
 test.py
+
+
+# Markdown tests 
+STRAT_PLAN.md
+STRATEGIES.md 

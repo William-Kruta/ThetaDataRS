@@ -10,7 +10,9 @@ def show_available_helpers(theta: ThetaDataRS, limit: int = 20) -> None:
     public_methods = [
         name
         for name in dir(theta)
-        if name.startswith(("fetch_", "get_", "read_", "stream_", "option_", "stock_", "index_"))
+        if name.startswith(
+            ("fetch_", "get_", "read_", "stream_", "option_", "stock_", "index_")
+        )
     ]
 
     print(f"Discovered {len(public_methods)} facade helpers")
@@ -74,7 +76,9 @@ def test_live_contracts(
         trading_date = dt.date.today().isoformat()
 
     contracts = theta.get_options_contract_list(ticker, trading_date)
-    print(f"get_options_contract_list({ticker!r}, {trading_date!r}) returned {len(contracts)} rows")
+    print(
+        f"get_options_contract_list({ticker!r}, {trading_date!r}) returned {len(contracts)} rows"
+    )
     print(contracts.head(rows))
 
 
@@ -99,9 +103,15 @@ def run_smoke_tests(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Smoke-test the ThetaDataRS facade helpers.")
-    parser.add_argument("--live", action="store_true", help="Run small ThetaData REST calls.")
-    parser.add_argument("--ticker", default="AAPL", help="Ticker for the live contract-list check.")
+    parser = argparse.ArgumentParser(
+        description="Smoke-test the ThetaDataRS facade helpers."
+    )
+    parser.add_argument(
+        "--live", action="store_true", help="Run small ThetaData REST calls."
+    )
+    parser.add_argument(
+        "--ticker", default="AAPL", help="Ticker for the live contract-list check."
+    )
     parser.add_argument(
         "--date",
         dest="trading_date",

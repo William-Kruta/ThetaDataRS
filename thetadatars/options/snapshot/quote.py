@@ -4,11 +4,29 @@ import polars as pl
 from typing import Literal
 
 from ...client import Client
+from ...data.cache import CachePolicy, get_or_fetch
 from ...data.db import get_connection
 
 log = logging.getLogger(__name__)
 
 _TABLE = "snapshot_quote"
+_ENDPOINT = "option_snapshot_quote"
+_READ_COLS = [
+    "root",
+    "expiration",
+    "strike",
+    "right",
+    "timestamp",
+    "bid_size",
+    "bid_exchange",
+    "bid",
+    "bid_condition",
+    "ask_size",
+    "ask_exchange",
+    "ask",
+    "ask_condition",
+]
+_DB_COLS = [*_READ_COLS, "fetched_at"]
 
 
 def fetch_snapshot_quote(
@@ -62,6 +80,22 @@ def read_snapshot_quote(
             conn.close()
 
 
+def _specific_strike(strike: float | str) -> float | None:
+    if strike == "*":
+        return None
+    return float(strike)
+
+
+def _read_right(right: Literal["call", "put", "both"]) -> Literal["call", "put"] | None:
+    return right if right in {"call", "put"} else None
+
+
+def _normalize_snapshot_quote(df: pl.DataFrame) -> pl.DataFrame:
+    if "symbol" in df.columns:
+        df = df.rename({"symbol": "root"})
+    return df.select([column for column in _READ_COLS if column in df.columns])
+
+
 def get_snapshot_quote(
     ticker: str,
     expiration: dt.date | str,
@@ -72,42 +106,67 @@ def get_snapshot_quote(
     strike_range: int | None = None,
     min_time: dt.time | None = None,
     stale_threshold: dt.timedelta = dt.timedelta(hours=1),
+    cache_policy: CachePolicy = "prefer_cache",
     conn=None,
 ) -> pl.DataFrame:
+    if isinstance(expiration, str) and expiration != "*":
+        expiration = dt.datetime.strptime(expiration, "%Y-%m-%d").date()
     exp_is_date = isinstance(expiration, dt.date)
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
     try:
-        stale_q = f"SELECT MAX(fetched_at) FROM {_TABLE} WHERE root = ?"
-        stale_params = [ticker]
-        if exp_is_date:
-            stale_q += " AND expiration = ?"
-            stale_params.append(expiration)
+        params = {
+            "expiration": expiration,
+            "strike": strike,
+            "right": right,
+            "max_dte": max_dte,
+            "strike_range": strike_range,
+            "min_time": min_time,
+        }
 
-        row = conn.execute(stale_q, stale_params).fetchone()
-        last_fetched = row[0] if row else None
-        is_stale = last_fetched is None or (dt.datetime.now() - last_fetched > stale_threshold)
+        def read_cached() -> pl.DataFrame:
+            return read_snapshot_quote(
+                ticker,
+                expiration if exp_is_date else None,
+                strike=_specific_strike(strike),
+                right=_read_right(right),
+                conn=conn,
+            )
 
-        if is_stale:
-            reason = "no local data" if last_fetched is None else "stale"
-            log.info("Fetching snapshot quote for %s exp=%s from API (%s)", ticker, expiration, reason)
-            try:
-                df = fetch_snapshot_quote(ticker, expiration, client, strike, right, max_dte, strike_range, min_time)
-                now = dt.datetime.now()
-                if "symbol" in df.columns:
-                    df = df.rename({"symbol": "root"})
-                df = df.with_columns(pl.lit(now).alias("fetched_at"))
-                df = df.select([c for c in ["root", "expiration", "strike", "right", "timestamp", "bid_size", "bid_exchange", "bid", "bid_condition", "ask_size", "ask_exchange", "ask", "ask_condition", "fetched_at"] if c in df.columns])
-                conn.execute(f"INSERT OR REPLACE INTO {_TABLE} SELECT * FROM df")
-                log.info("Fetched and stored %d quote snapshots for %s", len(df), ticker)
-            except Exception:
-                log.exception("Failed to fetch snapshot quote for %s exp=%s", ticker, expiration)
-                raise
-        else:
-            log.debug("Reading snapshot quote for %s from local DB (fetched_at=%s)", ticker, last_fetched)
+        def fetch_upstream() -> pl.DataFrame:
+            log.info("Fetching snapshot quote for %s exp=%s from API", ticker, expiration)
+            df = fetch_snapshot_quote(
+                ticker,
+                expiration,
+                client,
+                strike,
+                right,
+                max_dte,
+                strike_range,
+                min_time,
+            )
+            return _normalize_snapshot_quote(df)
 
-        return read_snapshot_quote(ticker, expiration if exp_is_date else None, conn=conn)
+        def write_cached(rows: pl.DataFrame, fetched_at: dt.datetime) -> None:
+            if rows.is_empty():
+                return
+            frame = rows.with_columns(pl.lit(fetched_at).alias("fetched_at"))
+            frame = frame.select([column for column in _DB_COLS if column in frame.columns])
+            conn.execute(f"INSERT OR REPLACE INTO {_TABLE} SELECT * FROM frame")
+            log.info("Fetched and stored %d quote snapshots for %s", len(frame), ticker)
+
+        return get_or_fetch(
+            conn=conn,
+            endpoint=_ENDPOINT,
+            root=ticker,
+            params=params,
+            cache_policy=cache_policy,
+            stale_threshold=stale_threshold,
+            read_cached=read_cached,
+            fetch_upstream=fetch_upstream,
+            write_cached=write_cached,
+        )
     finally:
         if own_conn:
             conn.close()

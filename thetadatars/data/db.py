@@ -481,6 +481,26 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             fetched_at           TIMESTAMP NOT NULL,
             PRIMARY KEY (root, expiration, strike, "right")
         );
+
+        CREATE TABLE IF NOT EXISTS cache_fetches (
+            fetch_id         TEXT      NOT NULL,
+            endpoint         TEXT      NOT NULL,
+            root             TEXT      NOT NULL,
+            params_hash      TEXT      NOT NULL,
+            params_json      TEXT      NOT NULL,
+            coverage_json    TEXT      NOT NULL,
+            cache_policy     TEXT      NOT NULL,
+            status           TEXT      NOT NULL,
+            row_count        BIGINT,
+            fetched_at       TIMESTAMP NOT NULL,
+            duration_seconds DOUBLE,
+            error_type       TEXT,
+            error_message    TEXT,
+            PRIMARY KEY (fetch_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cache_fetches_lookup
+            ON cache_fetches(endpoint, root, status, fetched_at);
     """)
 
 

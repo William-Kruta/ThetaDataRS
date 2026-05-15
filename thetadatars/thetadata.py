@@ -14,6 +14,7 @@ _OPTION_MODULES = [
     "thetadatars.options.list.expirations",
     "thetadatars.options.list.strikes",
     "thetadatars.options.list.symbols",
+    "thetadatars.options.batch",
     "thetadatars.options.history.eod",
     "thetadatars.options.history.greeks_all",
     "thetadatars.options.history.greeks_eod",
@@ -54,6 +55,7 @@ _OPTION_MODULES = [
     "thetadatars.options.screeners.calendar_spread",
     "thetadatars.options.screeners.diagonal_spread",
     "thetadatars.options.screeners.protective_put",
+    "thetadatars.options.screeners.strategies",
 ]
 
 _STREAMING_MODULES = [
@@ -70,7 +72,7 @@ def _load_public_functions() -> dict[str, Callable[..., Any]]:
     for module_name in _OPTION_MODULES:
         module = import_module(module_name)
         for name, value in inspect.getmembers(module, inspect.isfunction):
-            if name.startswith(("fetch_", "get_", "read_")):
+            if name.startswith(("fetch_", "get_", "read_", "plan_", "screen_", "warm_")):
                 functions[name] = value
 
     for module_name in _STREAMING_MODULES:
