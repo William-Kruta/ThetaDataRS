@@ -338,6 +338,37 @@ def get_first_order_chain(
             cache_policy=cache_policy,
             conn=conn,
         )
+        # ThetaData silently returns an empty DataFrame when the greeks endpoint is
+        # unavailable for the account tier, rather than raising a SubscriptionError.
+        # Treat that the same as a subscription gate and fall through to the local fallback.
+        if chain.is_empty() and fallback_to_local_greeks and greeks_source != "thetadata":
+            log.info(
+                "Falling back to local American option greeks for %s exp=%s because "
+                "ThetaData greeks endpoint returned no data (likely subscription gate)",
+                ticker,
+                expiration,
+            )
+            quote_chain = _snapshot_quotes_for_expirations(
+                ticker=ticker,
+                expirations=expirations,
+                client=client,
+                right=right,
+                max_dte=max_dte,
+                strike_range=strike_range,
+                min_time=min_time,
+                stale_threshold=stale_threshold,
+                cache_policy=cache_policy,
+                conn=conn,
+            )
+            diagnostics["greeks_source"] = "local"
+            return calculate_american_first_order_greeks(
+                quote_chain,
+                stock_price=stock_price,
+                valuation_date=today,
+                risk_free_rate=normalize_rate_value(rate_value),
+                annual_dividend=annual_dividend,
+                steps=local_steps,
+            )
         diagnostics["greeks_source"] = "thetadata"
         return chain
     except Exception as exc:

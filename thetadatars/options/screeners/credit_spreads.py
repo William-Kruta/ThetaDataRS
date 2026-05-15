@@ -27,6 +27,7 @@ from ._common import (
     probability_otm_from_delta,
     right_name,
 )
+from ._strategy_utils import expiration_date as _norm_expiration_date
 from ._typed import (
     BatchResult,
     BatchStats,
@@ -462,7 +463,7 @@ def _build_spread_row(
         "long_strike": long_strike,
         "width": width,
         "credit": credit,
-        "max_loss": max_loss,
+        "max_loss": max_loss * 100,
         "return_on_risk": return_on_risk,
         "annualized_return_on_risk": annualized_return_on_risk,
         "probability_otm": probability_otm,
@@ -508,17 +509,10 @@ def _build_credit_spreads(
     spreads = []
     pruned_candidate_rows = 0
 
-    expirations = sorted({row.get("expiration") for row in rows if row.get("expiration") is not None})
-    for expiration in expirations:
-        if isinstance(expiration, dt.datetime):
-            expiration_date = expiration.date()
-        elif isinstance(expiration, dt.date):
-            expiration_date = expiration
-        else:
-            expiration_date = dt.datetime.strptime(str(expiration), "%Y-%m-%d").date()
-
+    expirations = sorted({_norm_expiration_date(row.get("expiration")) for row in rows if row.get("expiration") is not None})
+    for expiration_date in expirations:
         dte = (expiration_date - today).days
-        expiration_rows = [row for row in rows if row.get("expiration") == expiration]
+        expiration_rows = [row for row in rows if row.get("expiration") is not None and _norm_expiration_date(row.get("expiration")) == expiration_date]
         expiration_candidates = 0
 
         for option_right in ("call", "put"):

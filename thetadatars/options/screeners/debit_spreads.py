@@ -386,7 +386,7 @@ def _build_rows(
                         "width": width,
                         "debit": debit,
                         "max_profit": max_profit,
-                        "max_loss": debit,
+                        "max_loss": debit * 100,
                         "return_on_risk": return_on_risk,
                         "annualized_return_on_risk": annualize(return_on_risk, days),
                         "breakeven": breakeven,

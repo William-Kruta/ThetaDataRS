@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import uuid
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -17,7 +18,7 @@ from ..errors import CacheMissError
 CachePolicy = Literal["prefer_cache", "cache_only", "refresh", "no_cache"]
 
 _VALID_POLICIES = {"prefer_cache", "cache_only", "refresh", "no_cache"}
-_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
 _LOCKS_GUARD = threading.Lock()
 
 
@@ -27,6 +28,7 @@ class CacheHit:
     root: str
     params: dict[str, Any]
     fetched_at: dt.datetime
+    row_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +96,11 @@ def normalize_cache_policy(policy: str) -> CachePolicy:
     return policy  # type: ignore[return-value]
 
 
+# Params where a cached value of None means "no restriction" (all rows were fetched),
+# so the cache covers any specific requested value for that param.
+_SUPERSET_NONE_PARAMS = {"max_dte", "strike_range", "min_time"}
+
+
 def _covers_right(cached: object, requested: object) -> bool:
     return cached == requested or cached == "both" and requested in {"call", "put"}
 
@@ -116,6 +123,9 @@ def params_cover(cached: dict[str, object], requested: dict[str, object]) -> boo
         elif key == "expiration":
             if cached_value != requested_value and cached_value != "*":
                 return False
+        elif key in _SUPERSET_NONE_PARAMS and cached_value is None:
+            # cached fetch had no restriction on this param → superset of any specific value
+            pass
         elif cached_value != requested_value:
             return False
     return True
@@ -131,18 +141,19 @@ def find_fresh_cache_hit(
     now: dt.datetime | None = None,
 ) -> CacheHit | None:
     now = now or dt.datetime.now()
+    earliest = now - stale_threshold
     rows = conn.execute(
         """
-        SELECT params_json, fetched_at
+        SELECT params_json, fetched_at, row_count
         FROM cache_fetches
         WHERE endpoint = ? AND root = ? AND status = 'success'
+          AND fetched_at >= ?
         ORDER BY fetched_at DESC
+        LIMIT 200
         """,
-        [endpoint, root],
+        [endpoint, root, earliest],
     ).fetchall()
-    for cached_params_json, fetched_at in rows:
-        if fetched_at is None or now - fetched_at > stale_threshold:
-            continue
+    for cached_params_json, fetched_at, row_count in rows:
         cached_params = json.loads(cached_params_json)
         if params_cover(cached_params, params):
             return CacheHit(
@@ -150,6 +161,7 @@ def find_fresh_cache_hit(
                 root=root,
                 params=cached_params,
                 fetched_at=fetched_at,
+                row_count=row_count,
             )
     return None
 
@@ -170,6 +182,7 @@ def inspect_cache_coverage(
         FROM cache_fetches
         WHERE endpoint = ? AND root = ? AND status = 'success'
         ORDER BY fetched_at DESC
+        LIMIT 500
         """,
         [endpoint, root],
     ).fetchall()
@@ -290,6 +303,11 @@ def get_or_fetch(
                 stale_threshold=stale_threshold,
             )
             if hit is not None:
+                # A previous fetch returned zero rows (e.g. no options for this ticker).
+                # Return empty immediately rather than re-querying the DB and then falling
+                # through to a redundant upstream fetch on every call within the stale window.
+                if hit.row_count == 0:
+                    return pl.DataFrame()
                 cached = read_cached()
                 if not cached.is_empty():
                     return cached
@@ -335,4 +353,7 @@ def get_or_fetch(
             fetched_at=fetched_at,
             duration_seconds=time.perf_counter() - started_at,
         )
-        return read_cached()
+        # Return the freshly-fetched rows directly rather than re-reading from the DB.
+        # Re-reading could return a different (potentially empty) result if write_cached
+        # skipped writing empty rows, and adds an unnecessary DB round-trip.
+        return rows

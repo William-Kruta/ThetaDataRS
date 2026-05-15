@@ -17,7 +17,12 @@ from ...errors import (
     classify_thetadata_error,
 )
 from ..snapshot.greeks_first_order import RateType
-from ._common import GreekSource, filter_expiration_dte, get_first_order_chain, parse_expiration
+from ._common import (
+    GreekSource,
+    filter_expiration_dte,
+    get_first_order_chain,
+    parse_expiration,
+)
 from ._single_leg import RankBy, build_single_leg_options, empty_frame
 from ._strategy_utils import sort_and_limit
 from ._typed import (
@@ -142,7 +147,9 @@ def _validate_request(
 ) -> tuple[dt.date | str, tuple[ScreenerWarning, ...]]:
     params = _request_params(request)
     if not request.ticker:
-        raise _invalid_request("ticker is required", ticker=None, params=params, endpoint=endpoint)
+        raise _invalid_request(
+            "ticker is required", ticker=None, params=params, endpoint=endpoint
+        )
     try:
         expiration = parse_expiration(request.expiration)
     except ValueError as exc:
@@ -276,7 +283,9 @@ def _planned_cost(request: LongPutRequest, expiration: dt.date | str) -> PlanCos
     return "low"
 
 
-def _planned_local_computation(request: LongPutRequest, expiration: dt.date | str) -> PlanCost:
+def _planned_local_computation(
+    request: LongPutRequest, expiration: dt.date | str
+) -> PlanCost:
     if request.greeks_source != "local":
         return "low"
     if expiration == "*" and request.strike_range is None:
@@ -318,9 +327,17 @@ def plan_long_puts(
                 params=params,
                 stale_threshold=request.stale_threshold,
             )
-            cache_hits = 1 if coverage.covered and coverage.fresh and request.cache_policy != "refresh" else 0
+            cache_hits = (
+                1
+                if coverage.covered
+                and coverage.fresh
+                and request.cache_policy != "refresh"
+                else 0
+            )
             cache_misses = 0 if cache_hits else 1
-            upstream_calls = 0 if cache_hits or request.cache_policy == "cache_only" else 1
+            upstream_calls = (
+                0 if cache_hits or request.cache_policy == "cache_only" else 1
+            )
 
         return ScreenerPlan(
             ticker=ticker,
@@ -367,8 +384,12 @@ def _empty_result(
     )
 
 
-def _sort_long_puts(puts: pl.DataFrame, *, rank_by: str, top_n: int | None) -> pl.DataFrame:
-    tie_breakers = [column for column in ["probability_itm", "premium"] if column != rank_by]
+def _sort_long_puts(
+    puts: pl.DataFrame, *, rank_by: str, top_n: int | None
+) -> pl.DataFrame:
+    tie_breakers = [
+        column for column in ["probability_itm", "premium"] if column != rank_by
+    ]
     descending = [True]
     descending.extend(False if column == "premium" else True for column in tie_breakers)
     return sort_and_limit(
@@ -526,7 +547,8 @@ def _attempt_screen(
             if (
                 timeout_policy is not None
                 and timeout_policy.per_ticker_seconds is not None
-                and time.perf_counter() - attempt_started > timeout_policy.per_ticker_seconds
+                and time.perf_counter() - attempt_started
+                > timeout_policy.per_ticker_seconds
             ):
                 raise ThetaTimeoutError(
                     "Long-put screening exceeded the per-ticker timeout.",
@@ -591,7 +613,11 @@ def screen_long_put_watchlist(
         rate_limiter.wait()
         ticker_request = request.for_ticker(ticker)
         try:
-            task_client = client if client is not None else (client_factory() if client_factory else create_client())
+            task_client = (
+                client
+                if client is not None
+                else (client_factory() if client_factory else create_client())
+            )
             result = _attempt_screen(
                 ticker_request,
                 client=task_client,
@@ -806,7 +832,11 @@ def warm_long_put_cache(
         rate_limiter.wait()
         ticker_request = request.for_ticker(ticker)
         try:
-            task_client = client if client is not None else (client_factory() if client_factory else create_client())
+            task_client = (
+                client
+                if client is not None
+                else (client_factory() if client_factory else create_client())
+            )
             result = _attempt_warm(
                 ticker_request,
                 client=task_client,
@@ -944,7 +974,9 @@ def get_best_puts(
         return get_best_long_puts(ticker, expiration, client=client, **kwargs)
     if side in {"cash_secured", "cash-secured", "csp"}:
         return get_best_cash_secured_puts(ticker, expiration, client=client, **kwargs)
-    raise ValueError("side must be one of: 'long', 'cash_secured', 'cash-secured', 'csp'")
+    raise ValueError(
+        "side must be one of: 'long', 'cash_secured', 'cash-secured', 'csp'"
+    )
 
 
 find_best_long_puts = get_best_long_puts

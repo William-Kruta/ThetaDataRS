@@ -26,6 +26,7 @@ from ._common import (
     probability_otm_from_delta,
     right_name,
 )
+from ._strategy_utils import expiration_date as _norm_expiration_date
 from ._typed import (
     BatchResult,
     BatchStats,
@@ -494,17 +495,10 @@ def _build_cash_secured_puts(
     fallback_underlying_price = _latest_underlying_price(rows)
     puts = []
 
-    expirations = sorted({row.get("expiration") for row in rows if row.get("expiration") is not None})
-    for expiration in expirations:
-        if isinstance(expiration, dt.datetime):
-            expiration_date = expiration.date()
-        elif isinstance(expiration, dt.date):
-            expiration_date = expiration
-        else:
-            expiration_date = dt.datetime.strptime(str(expiration), "%Y-%m-%d").date()
-
+    expirations = sorted({_norm_expiration_date(row.get("expiration")) for row in rows if row.get("expiration") is not None})
+    for expiration_date in expirations:
         dte = (expiration_date - today).days
-        expiration_rows = [row for row in rows if row.get("expiration") == expiration]
+        expiration_rows = [row for row in rows if row.get("expiration") is not None and _norm_expiration_date(row.get("expiration")) == expiration_date]
         for row in expiration_rows:
             if right_name(row.get("right")) != "put":
                 continue

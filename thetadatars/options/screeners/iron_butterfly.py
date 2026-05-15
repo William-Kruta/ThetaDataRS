@@ -324,7 +324,7 @@ def _build_rows(
                         "put_width": put_width,
                         "call_width": call_width,
                         "credit": credit,
-                        "max_loss": max_loss,
+                        "max_loss": max_loss * 100,
                         "return_on_risk": return_on_risk,
                         "annualized_return_on_risk": annualize(return_on_risk, days),
                         "lower_breakeven": body - credit,

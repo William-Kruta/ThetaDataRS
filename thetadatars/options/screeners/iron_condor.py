@@ -1,3 +1,4 @@
+import bisect
 import datetime as dt
 import logging
 import time
@@ -277,7 +278,12 @@ def _build_rows(
     for expiration, expiration_rows in grouped_by_expiration(normalize_rows(chain)).items():
         puts = sorted([r for r in expiration_rows if right_name(r.get("right")) == "put"], key=lambda r: finite_number(r.get("strike")) or 0)
         calls = sorted([r for r in expiration_rows if right_name(r.get("right")) == "call"], key=lambda r: finite_number(r.get("strike")) or 0)
+        call_strikes = [finite_number(r.get("strike")) for r in calls]
         days = dte(expiration, today)
+
+        # Pre-compute valid put-spread pairs (long_put, short_put) so the call-side
+        # loops don't redundantly re-evaluate put-side constraints on every iteration.
+        valid_put_pairs: list[tuple[float, float, float, float, float | None]] = []
         for long_put in puts:
             lp = finite_number(long_put.get("strike"))
             lp_ask = finite_number(long_put.get("ask"))
@@ -286,7 +292,7 @@ def _build_rows(
             for short_put in puts:
                 sp = finite_number(short_put.get("strike"))
                 sp_bid = finite_number(short_put.get("bid"))
-                if sp is None or sp_bid is None or lp >= sp:
+                if sp is None or sp_bid is None or sp <= lp:
                     continue
                 short_put_delta = finite_number(short_put.get("delta"))
                 if not _short_delta_allowed(short_put_delta, min_short_delta=min_short_delta, max_short_delta=max_short_delta):
@@ -295,62 +301,73 @@ def _build_rows(
                 if min_width is not None and put_width < min_width:
                     continue
                 if max_width is not None and put_width > max_width:
+                    break  # strikes are sorted; wider pairs only get wider from here
+                valid_put_pairs.append((lp, lp_ask, sp, sp_bid, short_put_delta, short_put.get("underlying_price"), short_put.get("root")))
+
+        for short_call in calls:
+            sc = finite_number(short_call.get("strike"))
+            sc_bid = finite_number(short_call.get("bid"))
+            if sc is None or sc_bid is None:
+                continue
+            short_call_delta = finite_number(short_call.get("delta"))
+            if not _short_delta_allowed(short_call_delta, min_short_delta=min_short_delta, max_short_delta=max_short_delta):
+                continue
+
+            # Only consider long_calls strictly above sc, within max_width.
+            lc_start = bisect.bisect_right(call_strikes, sc)
+            lc_end = len(calls)
+            if max_width is not None:
+                lc_end = bisect.bisect_right(call_strikes, sc + max_width)
+            if min_width is not None:
+                lc_start = bisect.bisect_left(call_strikes, sc + min_width, lc_start)
+
+            for long_call in calls[lc_start:lc_end]:
+                lc = finite_number(long_call.get("strike"))
+                lc_ask = finite_number(long_call.get("ask"))
+                if lc is None or lc_ask is None:
                     continue
-                for short_call in calls:
-                    sc = finite_number(short_call.get("strike"))
-                    sc_bid = finite_number(short_call.get("bid"))
-                    if sc is None or sc_bid is None or sc <= sp:
+                call_width = lc - sc
+
+                for lp, lp_ask, sp, sp_bid, short_put_delta, underlying_price, root in valid_put_pairs:
+                    if sc <= sp:
                         continue
-                    short_call_delta = finite_number(short_call.get("delta"))
-                    if not _short_delta_allowed(short_call_delta, min_short_delta=min_short_delta, max_short_delta=max_short_delta):
+                    credit = sp_bid - lp_ask + sc_bid - lc_ask
+                    max_loss = max(sp - lp, call_width) - credit
+                    if credit < min_credit or max_loss <= 0:
                         continue
-                    for long_call in calls:
-                        lc = finite_number(long_call.get("strike"))
-                        lc_ask = finite_number(long_call.get("ask"))
-                        if lc is None or lc_ask is None or lc <= sc:
-                            continue
-                        call_width = lc - sc
-                        if min_width is not None and call_width < min_width:
-                            continue
-                        if max_width is not None and call_width > max_width:
-                            continue
-                        credit = sp_bid - lp_ask + sc_bid - lc_ask
-                        max_loss = max(put_width, call_width) - credit
-                        if credit < min_credit or max_loss <= 0:
-                            continue
-                        return_on_risk = credit / max_loss
-                        put_prob = probability_otm_from_delta(finite_number(short_put.get("delta")))
-                        call_prob = probability_otm_from_delta(finite_number(short_call.get("delta")))
-                        probability_range = None
-                        if put_prob is not None and call_prob is not None:
-                            probability_range = max(0.0, min(1.0, put_prob + call_prob - 1))
-                        if min_probability_range is not None and (probability_range is None or probability_range < min_probability_range):
-                            continue
-                        risk_adjusted_return = return_on_risk * probability_range if probability_range is not None else None
-                        output.append({
-                            "root": short_put.get("root", ticker),
-                            "expiration": expiration,
-                            "strategy": "iron_condor",
-                            "long_put_strike": lp,
-                            "short_put_strike": sp,
-                            "short_call_strike": sc,
-                            "long_call_strike": lc,
-                            "put_width": put_width,
-                            "call_width": call_width,
-                            "credit": credit,
-                            "max_loss": max_loss,
-                            "return_on_risk": return_on_risk,
-                            "annualized_return_on_risk": annualize(return_on_risk, days),
-                            "probability_range": probability_range,
-                            "risk_adjusted_return": risk_adjusted_return,
-                            "annualized_risk_adjusted_return": annualize(risk_adjusted_return, days),
-                            "lower_breakeven": sp - credit,
-                            "upper_breakeven": sc + credit,
-                            "dte": days,
-                            "underlying_price": finite_number(short_put.get("underlying_price")),
-                            "short_put_delta": short_put_delta,
-                            "short_call_delta": short_call_delta,
-                        })
+                    return_on_risk = credit / max_loss
+                    call_prob = probability_otm_from_delta(finite_number(short_call.get("delta")))
+                    sp_prob = probability_otm_from_delta(short_put_delta)
+                    probability_range = None
+                    if sp_prob is not None and call_prob is not None:
+                        probability_range = max(0.0, min(1.0, sp_prob + call_prob - 1))
+                    if min_probability_range is not None and (probability_range is None or probability_range < min_probability_range):
+                        continue
+                    risk_adjusted_return = return_on_risk * probability_range if probability_range is not None else None
+                    output.append({
+                        "root": root if root is not None else ticker,
+                        "expiration": expiration,
+                        "strategy": "iron_condor",
+                        "long_put_strike": lp,
+                        "short_put_strike": sp,
+                        "short_call_strike": sc,
+                        "long_call_strike": lc,
+                        "put_width": sp - lp,
+                        "call_width": call_width,
+                        "credit": credit,
+                        "max_loss": max_loss * 100,
+                        "return_on_risk": return_on_risk,
+                        "annualized_return_on_risk": annualize(return_on_risk, days),
+                        "probability_range": probability_range,
+                        "risk_adjusted_return": risk_adjusted_return,
+                        "annualized_risk_adjusted_return": annualize(risk_adjusted_return, days),
+                        "lower_breakeven": sp - credit,
+                        "upper_breakeven": sc + credit,
+                        "dte": days,
+                        "underlying_price": finite_number(underlying_price),
+                        "short_put_delta": short_put_delta,
+                        "short_call_delta": short_call_delta,
+                    })
     return pl.DataFrame(output).select(_OUTPUT_COLUMNS) if output else empty_frame(_OUTPUT_COLUMNS)
 
 
